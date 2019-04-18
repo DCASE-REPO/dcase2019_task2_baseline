@@ -60,7 +60,7 @@ $ main.py \
 ```
   This will produce checkpoint files in `train_dir` having the name prefix `model.ckpt-N` with
   increasing N, where N represents the number of batches of examples seen by the model.  By default,
-  checkpoints are written every 100 batches (edit the saver settings in `train.py`o to change this).
+  checkpoints are written every 100 batches. Edit the saver settings in `train.py` to change this.
 
   This will also print the loss at each step on standard output, as well as add summary entries to a
   TensorFlow event log in `train_dir` which can be viewed by running a TensorBoard server pointed at
@@ -287,11 +287,11 @@ of size 0.5s, a batch size of 32, and a learning rate of 0.01.
 
 A few notes about some of the hyperparameters:
 
-* Label Smoothing: This was introduced in Inception v3 [3] and converts each ground truth label into a blend of the original label and 0.5 (representing a uniform probability distribution). The higher the `lsmooth` hyperparameter (in the range [0, 1]), the more the labels are blended towards 0.5. This is useful when training with noisy labels that we don't trust.
+* **Label Smoothing**: This was introduced in Inception v3 [3] and converts each ground truth label into a blend of the original label and 0.5 (representing a uniform probability distribution). The higher the `lsmooth` hyperparameter (in the range [0, 1]), the more the labels are blended towards 0.5. This is useful when training with noisy labels that we don't trust.
 
-* Warm Start: As mentioned in the Usage section earlier, specifying `warmstart=1` requires also specifying a `--warmstart_checkpoint` flag as well as optionally the `--warmstart_{include,exclude}_scopes` flags.
+* **Warm Start**: As mentioned in the Usage section earlier, specifying `warmstart=1` requires also specifying a `--warmstart_checkpoint` flag as well as optionally the `--warmstart_{include,exclude}_scopes` flags.
 
-* Exponential Decay: Setting `lrdecay` greater than 0 will enable exponential decay of learning rate, as described in the TensorFlow documentation to [tf.train.exponential_decay](https://www.tensorflow.org/api_docs/python/tf/train/exponential_decay). You will also need to specify the `--epoch_num_batches` flag to specify the number of batches in an epoch for the training dataset that you will be using, as well as the `decay_epochs` hyperparameter if you want to change the default number of epochs before the learning rate changes.
+* **Exponential Decay**: Setting `lrdecay` greater than 0 will enable exponential decay of learning rate, as described in the TensorFlow documentation to [tf.train.exponential_decay](https://www.tensorflow.org/api_docs/python/tf/train/exponential_decay). You will also need to specify the `--epoch_num_batches` flag to specify the number of batches in an epoch for the training dataset that you will be using, as well as the `decay_epochs` hyperparameter if you want to change the default number of epochs before the learning rate changes.
 
 An aside on computing epoch sizes: We can use a simple back-of-the-envelope calculation of epoch
 sizes from dataset size because we use uncompressed WAVs with a fixed sample rate (44.1 kHz) and a
@@ -318,6 +318,8 @@ The baseline system submission was produced using the following recipe:
 
 * We used the following hyperparameters:
 
+  * All runs used Xavier initialization as well as batch normalization and the Adam optimizer with the default settings as specified in `parse_hparams()` in `model.py`.
+  
   * Noisy training: batch size 64, learning rate 1e-4, no learning rate decay, dropout keep probability 0.8, label smoothing factor 0.3, global max pooling. We trained on the entire noisy training set for ~10 epochs (~3 hrs on a Tesla V-100).
 
   * Curated training: batch size 64, learning rate 3e-3, learning rate decay 0.94, dropout keep probability 0.6, label smoothing factor 0.1, global max pooling, warmstarted using all weights from all layers. We trained on the entire curated training set for ~100 epochs (~5 hrs on a Tesla V-100).
