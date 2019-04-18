@@ -32,7 +32,7 @@ def train(model_name=None, hparams=None, class_map_path=None, train_csv_path=Non
     saver = tf.train.Saver(
         max_to_keep=10000, keep_checkpoint_every_n_hours=0.25)
     saver_hook = tf.train.CheckpointSaverHook(
-        save_steps=5, checkpoint_dir=train_dir, saver=saver)
+        save_steps=100, checkpoint_dir=train_dir, saver=saver)
 
     summary_op = tf.summary.merge_all()
     summary_hook = tf.train.SummarySaverHook(

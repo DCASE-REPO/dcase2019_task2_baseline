@@ -60,7 +60,7 @@ $ main.py \
 ```
   This will produce checkpoint files in `train_dir` having the name prefix `model.ckpt-N` with
   increasing N, where N represents the number of batches of examples seen by the model.  By default,
-  checkpoints are written every 500 batches (edit the saver settings in `train.py`o to change this).
+  checkpoints are written every 100 batches (edit the saver settings in `train.py`o to change this).
 
   This will also print the loss at each step on standard output, as well as add summary entries to a
   TensorFlow event log in `train_dir` which can be viewed by running a TensorBoard server pointed at
@@ -405,6 +405,8 @@ Lwlrap(Dishes_and_pots_and_pans) = 0.221663
 Lwlrap(Cupboard_open_or_close) = 0.218870
 Lwlrap(Chirp_and_tweet) = 0.127003
 ```
+
+Within a Kaggle kernel, our inference code produces a submission on the entire test set (4x the size of the public test set) in ~2 min when using GPU, and ~45 min when using CPU. This includes time to read the WAV files and extract features.
 
 ## Ideas for improvement
 
