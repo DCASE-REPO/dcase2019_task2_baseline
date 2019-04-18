@@ -183,9 +183,9 @@ each depth channel independently) followed by a 1x1 pointwise convolution (which
 channels).  This factoring greatly reduces the number of layer weights (up to 9 times less than
 standard convolutions if using 3x3 filters) with only a small reduction in model accuracy.
 
-The model layers are listed in the table below using notation `C(kernel size, stride, depth)` and
-`SC(kernel size, stride, depth)` to denote 2-D convolution and separable convolution layers,
-respectively.  ReduceMax or Mean applies a maximum-value or mean-value reduction, respectively,
+The model layers are listed in the table below using notation `C(kernel size, depth, stride)` and
+`SC(kernel size, depth, stride)` to denote 2-D convolution and separable convolution layers,
+respectively.  ReduceMax/Mean applies a maximum-value or mean-value reduction, respectively,
 across the first two dimensions. Logistic applies a fully-connected linear layer followed by a
 sigmoid classifier. Activation shapes do not include the batch dimension.
 
@@ -225,7 +225,7 @@ list of 80 scores.
 
 ### Hyperparameters
 
-The following hyperparameters, defined with their default values in `runner.py`,
+The following hyperparameters, defined with their default values in `parse_hparams()` in `model.py`,
 are used in the input pipeline and model definition.
 
 ```python
@@ -291,12 +291,12 @@ A few notes about some of the hyperparameters:
 
 * **Warm Start**: As mentioned in the Usage section earlier, specifying `warmstart=1` requires also specifying a `--warmstart_checkpoint` flag as well as optionally the `--warmstart_{include,exclude}_scopes` flags.
 
-* **Exponential Decay**: Setting `lrdecay` greater than 0 will enable exponential decay of learning rate, as described in the TensorFlow documentation to [tf.train.exponential_decay](https://www.tensorflow.org/api_docs/python/tf/train/exponential_decay). You will also need to specify the `--epoch_num_batches` flag to specify the number of batches in an epoch for the training dataset that you will be using, as well as the `decay_epochs` hyperparameter if you want to change the default number of epochs before the learning rate changes.
+* **Exponential Decay**: Setting `lrdecay` greater than 0 will enable exponential decay of learning rate, as described in the TensorFlow documentation of [tf.train.exponential_decay](https://www.tensorflow.org/api_docs/python/tf/train/exponential_decay). You will also need to specify the `--epoch_num_batches` flag to define the number of batches in an epoch for the training dataset that you will be using, as well as the `decay_epochs` hyperparameter if you want to change the default number of epochs before the learning rate changes.
 
 An aside on computing epoch sizes: We can use a simple back-of-the-envelope calculation of epoch
-sizes from dataset size because we use uncompressed WAVs with a fixed sample rate (44.1 kHz) and a
-fixed sample size (16-bit signed PCM). For example, the total size of the `train_curated` directory
-containing all the clips is 3.2 GB. Each sample is 2 bytes, and each second needs 44100 samples, so
+sizes from dataset file size because we use uncompressed WAVs with a fixed sample rate (44.1 kHz) and a
+fixed sample size (16-bit signed PCM). For example, the total size of the `train_curated` directory 
+is 3.2 GB. Each sample is 2 bytes, and each second needs 44100 samples, so
 the total number of seconds in the training set is (3.2 * 2 ^ 30) / (2 * 44100) = ~38956. We frame
 examples with a hop of 0.5s seconds and if we have a batch size of 64, then the number of batches in
 an epoch would be 38956 / 0.5 / 64 = ~1217. Similarly, for a batch size of 64, the number of batches
