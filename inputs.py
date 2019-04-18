@@ -147,7 +147,7 @@ def train_input(train_csv_path=None, train_clip_dir=None, class_map_path=None, h
   # shuffle for training. 20K should be enough to allow shuffling across a
   # few hundred clips which are already in random order.
   dataset = dataset.apply(tf.contrib.data.unbatch())
-  dataset = dataset.shuffle(buffer_size=10) #20000)
+  dataset = dataset.shuffle(buffer_size=20000)
   # Run until we have completed 1000 epochs of the training set.
   dataset = dataset.repeat(1000)
   # Batch examples.
