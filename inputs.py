@@ -4,9 +4,7 @@ import functools
 import os
 
 import numpy as np
-from scipy.io import wavfile
 import tensorflow as tf
-
 from tensorflow.contrib.framework.python.ops import audio_ops as tf_audio
 
 # All input clips use a 44.1 kHz sample rate.
@@ -16,8 +14,7 @@ def clip_to_waveform(clip, clip_dir=None):
   """Decodes a WAV clip into a waveform tensor."""
   # Decode the WAV-format clip into a waveform tensor where
   # the values lie in [-1, +1].
-  clip_basename = tf.strings.join([clip, '.wav'])
-  clip_path = tf.string_join([clip_dir, clip_basename], separator=os.sep)
+  clip_path = tf.string_join([clip_dir, clip], separator=os.sep)
   clip_data = tf.read_file(clip_path)
   waveform, sr = tf_audio.decode_wav(clip_data)
   #waveform = tf.Print(waveform, [tf.shape(waveform), waveform], message='Waveform:', summarize=100)
@@ -70,7 +67,8 @@ def clip_to_log_mel_examples(clip, clip_dir=None, hparams=None):
   return features
 
 def record_to_labeled_log_mel_examples(csv_record, clip_dir=None, hparams=None,
-                                       label_class_index_table=None, num_classes=None):
+                                       label_class_index_table=None, num_classes=None,
+                                       training=None):
   """Creates a batch of log mel spectrum examples from a training record.
 
   Args:
@@ -84,15 +82,15 @@ def record_to_labeled_log_mel_examples(csv_record, clip_dir=None, hparams=None,
     features: Tensor containing a batch of log mel spectrum examples.
     labels: Tensor containing corresponding labels in 1-hot format.
   """
-  [clip, _, labels_str] = tf.decode_csv(csv_record, record_defaults=[[''],[''],['']])
+  [clip, labels_str] = tf.decode_csv(csv_record, record_defaults=[[''],['']])
 
   features = clip_to_log_mel_examples(clip, clip_dir=clip_dir, hparams=hparams)
+  num_examples = tf.shape(features)[0]
 
-  labels = tf.strings.split([labels_str], sep=',').values
-  class_indices = label_class_index_table.lookup(labels)
+  clip_labels = tf.strings.split([labels_str], sep=',').values
+  class_indices = label_class_index_table.lookup(clip_labels)
   label_onehots = tf.one_hot(indices=class_indices, depth=num_classes)
   label_multihot = tf.reduce_max(label_onehots, axis=[0], keepdims=False)
-  num_examples = tf.shape(features)[0]
   labels = tf.tile([label_multihot], [num_examples, 1])
 
   return features, labels
@@ -131,8 +129,8 @@ def train_input(train_csv_path=None, train_clip_dir=None, class_map_path=None, h
   dataset = tf.data.TextLineDataset(train_csv_path)
   # Skip the header.
   dataset = dataset.skip(1)
-  # Shuffle the list of clips. 10K is big enough to cover all clips.
-  dataset = dataset.shuffle(buffer_size=10000)
+  # Shuffle the list of clips. 25K is big enough to cover all clips.
+  dataset = dataset.shuffle(buffer_size=25000)
   # Map each clip to a batch of framed log mel spectrum examples.
   dataset = dataset.map(
       map_func=functools.partial(
@@ -140,7 +138,8 @@ def train_input(train_csv_path=None, train_clip_dir=None, class_map_path=None, h
           clip_dir=train_clip_dir,
           hparams=hparams,
           label_class_index_table=label_class_index_table,
-          num_classes=num_classes),
+          num_classes=num_classes,
+          training=True),
       # 4 is empirically chosen to use 4 logical CPU cores. Adjust as
       # needed if more or less resources are available.
       num_parallel_calls=4)
@@ -148,9 +147,9 @@ def train_input(train_csv_path=None, train_clip_dir=None, class_map_path=None, h
   # shuffle for training. 20K should be enough to allow shuffling across a
   # few hundred clips which are already in random order.
   dataset = dataset.apply(tf.contrib.data.unbatch())
-  dataset = dataset.shuffle(buffer_size=20000)
-  # Run until we have completed 100 epochs of the training set.
-  dataset = dataset.repeat(100)
+  dataset = dataset.shuffle(buffer_size=10) #20000)
+  # Run until we have completed 1000 epochs of the training set.
+  dataset = dataset.repeat(1000)
   # Batch examples.
   dataset = dataset.apply(tf.contrib.data.batch_and_drop_remainder(batch_size=hparams.batch_size))
   # Let the input pipeline run a few batches ahead so that the model is

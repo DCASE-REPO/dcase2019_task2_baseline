@@ -7,50 +7,114 @@ import tensorflow as tf
 
 slim = tf.contrib.slim
 
-def define_mlp(features=None, hparams=None):
-  """Defines a multi-layer perceptron model, without the classifier layer."""
-  net = slim.flatten(features)
-  net = slim.repeat(net, hparams.nl, slim.fully_connected, hparams.nh)
-  return net
+def parse_hparams(flag_hparams):
+  # Default values for all hyperparameters.
+  hparams = tf.contrib.training.HParams(
+      # Window and hop length for Short-Time Fourier Transform applied to audio
+      # waveform to make the spectrogram.
+      stft_window_seconds=0.025,
+      stft_hop_seconds=0.010,
+      # Parameters controlling conversion of spectrogram into mel spectrogram.
+      mel_bands=96,
+      mel_min_hz=20,
+      mel_max_hz=20000,
+      # log mel spectrogram = log(mel-spectrogram + mel_log_offset)
+      mel_log_offset=0.001,
+      # Window and hop length used to frame the log mel spectrogram into
+      # examples.
+      example_window_seconds=1.0,
+      example_hop_seconds=0.5,
+      # Number of examples in each batch fed to the model.
+      batch_size=64,
+      # For all CNN classifiers, whether to use global mean or max pooling.
+      global_pool='mean',
+      # Dropout keep probability. Set to zero to skip dropout layer.
+      dropout=0.0,
+      # Label smoothing. A setting of alpha will make the ground truth
+      # label (1 - alpha) * 1.0 + alpha * 0.5 (smoothing towards the
+      # uniform 0.5 rather than a hard 1.0). Set to zero to disable.
+      lsmooth=0.0,
+      # Standard deviation of the normal distribution with mean 0 used to
+      # initialize the weights of the model. A standard deviation of zero
+      # selects Xavier initialization. Biases are always initialized to 0.
+      weights_init_stddev=0.0,
+      # Whether to use batch norm, and corresponding decay and epsilon
+      # if batch norm is enabled.
+      bn=1,
+      bndecay=0.9997,
+      bneps=0.001,
+      # Whether to warm-start from an existing checkpoint. Use --warmstart_*
+      # flags to specify the checkpoint and include/exclude scopes.
+      warmstart=0,
+      # Type of optimizer (sgd, adam)
+      opt='adam',
+      # Learning rate.
+      lr=1e-4,
+      # Epsilon passed to the Adam optimizer.
+      adam_eps=1e-8,
+      # Learning rate decay. Set to zero to disable. If non-zero, then
+      # learning rate gets multiplied by 'lrdecay' every 'decay_epochs'
+      # epochs.
+      lrdecay=0.0,
+      # How many epochs to wait between each decay of learning rate.
+      decay_epochs=2.5)
 
-def define_cnn(features=None, hparams=None):
-  """Defines a convolutional neural network model, without the classifier layer."""
-  net = tf.expand_dims(features, axis=3)
-  with slim.arg_scope([slim.conv2d],
-                      stride=1, padding='SAME'), \
-       slim.arg_scope([slim.max_pool2d],
-                      stride=2, padding='SAME'):
-    net = slim.conv2d(net, 100, kernel_size=[7, 7])
-    net = slim.max_pool2d(net, kernel_size=[3, 3])
-    net = slim.conv2d(net, 150, kernel_size=[5, 5])
-    net = slim.max_pool2d(net, kernel_size=[3, 3])
-    net = slim.conv2d(net, 200, kernel_size=[3, 3])
-    net = tf.reduce_max(net, axis=[1,2], keepdims=True)
-    net = slim.flatten(net)
-  return net
+  # Let flags override default hparam values.
+  hparams.parse(flag_hparams)
 
-def define_mobilenet(features=None, hparams=None):
-  """Defines a MobileNet-style CNN, without the classifier layer."""
+  return hparams
+
+def get_global_pool_op(hparams):
+  if hparams.global_pool == 'mean':
+    return tf.reduce_mean
+  elif hparams.global_pool == 'max':
+    return tf.reduce_max
+  else:
+    raise NotImplementedError('Unknown global pooling function: %r', hparams.global_pool)
+
+# Adapted from MobileNet v1's official TF-Slim implementation
+# https://github.com/tensorflow/models/blob/master/research/slim/nets/mobilenet_v1.py
+def define_mobilenet_v1(features=None, hparams=None):
+  """Defines MobileNet v1 CNN, without the classifier layer."""
   net = tf.expand_dims(features, axis=3)
-  with slim.arg_scope([slim.separable_conv2d],
-                      kernel_size=3, depth_multiplier=1, padding='SAME'):
+
+  with slim.arg_scope([slim.conv2d], padding='SAME'):
     net = slim.conv2d(net, 16, kernel_size=3, stride=1, padding='SAME')
-    net = slim.separable_conv2d(net, 32, stride=2)
-    net = slim.separable_conv2d(net, 32, stride=1)
-    net = slim.separable_conv2d(net, 64, stride=2)
-    net = slim.separable_conv2d(net, 64, stride=1)
-    net = slim.separable_conv2d(net, 128, stride=2)
-    net = slim.separable_conv2d(net, 128, stride=1)
-    net = slim.separable_conv2d(net, 256, stride=2)
-    net = slim.separable_conv2d(net, 256, stride=1)
-    net = slim.separable_conv2d(net, 256, stride=1)
-    net = slim.separable_conv2d(net, 512, stride=2)
-    net = slim.max_pool2d(net, kernel_size=[1,2], stride=1, padding='VALID')
-    net = slim.flatten(net)
+    stride_depths = [
+        (1, 64),
+        (2, 128),
+        (1, 128),
+        (2, 256),
+        (1, 256),
+        (2, 512),
+        (1, 512),
+        (1, 512),
+        (1, 512),
+        (1, 512),
+        (1, 512),
+        (2, 1024),
+        (1, 1024),
+    ]
+    for (stride, depth) in stride_depths:
+      # Create a separable convolution layer using a sequence of depthwise
+      # and pointwise convolutions. We don't do it using a single call to
+      # slim.separable_conv2d() because that adds a single batch norm layer
+      # after both convolutions while we want a batch norm after each of
+      # thed depthwise and pointwise convolutions.
+
+      # Use num_outputs=None to force creating only depthwise convolution per
+      # channel
+      net = slim.separable_conv2d(net, num_outputs=None, kernel_size=[3, 3],
+                                  depth_multiplier=1, stride=stride, padding='SAME')
+      # Now create a separate pointwise (1x1) convolution.
+      net = slim.conv2d(net, depth, kernel_size=[1, 1], stride=1, padding='SAME')
+
+  net = get_global_pool_op(hparams)(net, axis=[1, 2], keepdims=True)
+  net = slim.flatten(net)
   return net
 
-def define_model(model_name=None, features=None, labels=None, num_classes=None, hparams=None,
-                 training=False):
+def define_model(model_name=None, features=None, labels=None, num_classes=None,
+                 hparams=None, epoch_batches=None, training=False):
   """Defines a classifier model.
 
   Args:
@@ -59,6 +123,7 @@ def define_model(model_name=None, features=None, labels=None, num_classes=None, 
     labels: tensor containing a batch of corresponding labels.
     num_classes: number of classes.
     hparams: model hyperparameters.
+    epoch_batches: Number of batches in an epoch (used for controlling lr decay).
     training: True iff the model is being trained.
 
   Returns:
@@ -67,11 +132,6 @@ def define_model(model_name=None, features=None, labels=None, num_classes=None, 
     loss: tensor containing the training loss for each batch.
     train_op: op that runs training (forward and backward passes) for each batch.
   """
-  global_step = tf.Variable(
-      0, name='global_step', trainable=training,
-      collections=[tf.GraphKeys.GLOBAL_VARIABLES,
-                   tf.GraphKeys.GLOBAL_STEP])
-
   if hparams.weights_init_stddev == 0.0:
     weights_initializer = slim.initializers.xavier_initializer()
   else:
@@ -79,55 +139,72 @@ def define_model(model_name=None, features=None, labels=None, num_classes=None, 
 
   if hparams.bn:
     normalizer = slim.batch_norm
-    normalizer_params = { 'decay': hparams.bndecay, 'epsilon': hparams.bneps }
+    normalizer_params = {
+        'center': True,
+        'scale': True,
+        'decay': hparams.bndecay,
+        'epsilon': hparams.bneps
+    }
   else:
     normalizer = normalizer_params = None
 
-  with slim.arg_scope([slim.conv2d, slim.separable_conv2d, slim.fully_connected],
+  with slim.arg_scope([slim.conv2d, slim.separable_conv2d],
                       weights_initializer=weights_initializer,
                       biases_initializer=tf.zeros_initializer(),
+                      normalizer_fn=normalizer,
+                      normalizer_params=normalizer_params,
                       activation_fn=tf.nn.relu,
                       trainable=training), \
-       slim.arg_scope([slim.conv2d, slim.separable_conv2d],
-                      normalizer_fn=normalizer,
-                      normalizer_params=normalizer_params), \
-       slim.arg_scope([slim.batch_norm],
+       slim.arg_scope([slim.fully_connected],
+                      weights_initializer=weights_initializer,
+                      biases_initializer=tf.zeros_initializer(),
+                      trainable=training), \
+       slim.arg_scope([slim.batch_norm, slim.dropout],
                       is_training=training):
+
+    global_step = tf.train.create_global_step()
+
     # Define the model without the classifier layer.
-    if model_name == 'mlp':
-      embedding = define_mlp(features=features, hparams=hparams)
-    elif model_name == 'cnn':
-      embedding = define_cnn(features=features, hparams=hparams)
-    elif model_name == 'mobilenet':
-      embedding = define_mobilenet(features=features, hparams=hparams)
+    if model_name == 'mobilenet-v1':
+      embedding = define_mobilenet_v1(features=features, hparams=hparams)
     else:
-      raise ValueError('Unknown model %s' % model)
+      raise NotImplementedError('Unknown model %r' % model_name)
+
+    if hparams.dropout > 0.0:
+      embedding = slim.dropout(embedding, keep_prob=hparams.dropout)
 
     # Add the logits and the classifier layer.
     logits = slim.fully_connected(embedding, num_classes, activation_fn=None)
-    if hparams.classifier == 'logistic':
-      prediction = tf.nn.sigmoid(logits)
-    elif hparams.classifier == 'softmax':
-      prediction = tf.nn.softmax(logits)
-    else:
-      raise ValueError('Bad classifier: %s' % classifier)
+    prediction = tf.nn.sigmoid(logits)
 
   if training:
     # In training mode, also create loss and train op.
-    if hparams.classifier == 'logistic':
-      xent = tf.nn.sigmoid_cross_entropy_with_logits(
-          logits=logits, labels=labels)
-    elif hparams.classifier == 'softmax':
-      xent = tf.nn.softmax_cross_entropy_with_logits_v2(
-          logits=logits, labels=labels)
-
+    xent = tf.losses.sigmoid_cross_entropy(
+        multi_class_labels=labels, logits=logits, label_smoothing=hparams.lsmooth,
+        reduction=tf.losses.Reduction.NONE)
     loss = tf.reduce_mean(xent)
     tf.summary.scalar('loss', loss)
 
-    optimizer = tf.train.AdamOptimizer(
-        learning_rate=hparams.lr,
-        epsilon=hparams.adam_eps)
-    train_op = optimizer.minimize(loss, global_step=global_step)
+    if hparams.lrdecay > 0.0:
+      decay_batches = int(epoch_batches * hparams.decay_epochs)
+      lr = tf.train.exponential_decay(
+          learning_rate=hparams.lr,
+          global_step=global_step,
+          decay_steps=decay_batches,
+          decay_rate=hparams.lrdecay,
+          staircase=True)
+    else:
+      lr = hparams.lr
+
+    if hparams.opt == 'sgd':
+      optimizer = tf.train.GradientDescentOptimizer(learning_rate=lr)
+    elif hparams.opt == 'adam':
+      optimizer = tf.train.AdamOptimizer(
+          learning_rate=lr, epsilon=hparams.adam_eps)
+    else:
+      raise NotImplementedError('Unknown optimizer: %r' % hparams.opt)
+
+    train_op = slim.learning.create_train_op(loss, optimizer)
   else:
     loss = None
     train_op = None

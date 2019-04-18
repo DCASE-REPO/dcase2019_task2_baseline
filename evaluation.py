@@ -1,10 +1,15 @@
 """Evaluation for DCASE 2019 Task 2 Baseline models."""
 
+from __future__ import print_function
+
 import csv
 from collections import defaultdict
+import itertools
 import os
 import random
+import re
 import sys
+import time
 
 import numpy as np
 import sklearn.metrics
@@ -12,7 +17,6 @@ import tensorflow as tf
 
 import inputs
 import model
-
 
 class Lwlrap(object):
   """Computes label-weighted label-ranked average precision (lwlrap)."""
@@ -65,7 +69,7 @@ class Lwlrap(object):
     # Only calculate precisions if there are some true classes.
     if not len(pos_class_indices):
       return pos_class_indices, np.zeros(0)
-    # Retrieval list of classes for this sample. 
+    # Retrieval list of classes for this sample.
     retrieved_classes = np.argsort(scores)[::-1]
     # class_rankings[top_scoring_class_index] == 0 etc.
     class_rankings = np.zeros(num_classes, dtype=np.int)
@@ -77,7 +81,7 @@ class Lwlrap(object):
     retrieved_cumulative_hits = np.cumsum(retrieved_class_true)
     # Precision of retrieval list truncated at each hit, in order of pos_labels.
     precision_at_hits = (
-        retrieved_cumulative_hits[class_rankings[pos_class_indices]] / 
+        retrieved_cumulative_hits[class_rankings[pos_class_indices]] /
         (1 + class_rankings[pos_class_indices].astype(np.float)))
     return pos_class_indices, precision_at_hits
 
@@ -88,7 +92,7 @@ class Lwlrap(object):
 
   def per_class_weight(self):
     """Return a normalized weight vector for the contributions of each class."""
-    return (self._per_class_cumulative_count / 
+    return (self._per_class_cumulative_count /
             float(np.sum(self._per_class_cumulative_count)))
 
   def overall_lwlrap(self):
@@ -132,12 +136,90 @@ class LwlrapSklearn(object):
     return 'Overall lwlrap: %.6f' % self.overall_lwlrap()
 
 
-def evaluate(model_name=None, hparams=None, eval_csv_path=None, eval_clip_dir=None,
-             class_map_path=None, checkpoint_path=None):
+def get_checkpoint_num(checkpoint_path):
+  m = re.match('^/.+model.ckpt-([0-9]+)$', checkpoint_path)
+  return int(m.group(1))
+
+def eval_marker_path(eval_dir, checkpoint_num):
+  return os.path.join(eval_dir, "eval-%d.txt" % checkpoint_num)
+
+def eval_done(eval_dir, checkpoint_num):
+  return os.path.exists(eval_marker_path(eval_dir, checkpoint_num))
+
+def write_eval_marker(eval_dir, checkpoint_num, lwlrap):
+  eval_marker_file = open(eval_marker_path(eval_dir, checkpoint_num), 'w')
+  eval_marker_file.write(str(lwlrap))
+  eval_marker_file.close()
+
+def make_scalar_summary(name, value):
+  summary = tf.summary.Summary()
+  summary_value = summary.value.add()
+  summary_value.tag = name
+  summary_value.simple_value = value
+  return summary
+
+def eval_checkpoint(checkpoint_path, eval_dir, summary_writer, eval_csv_path, class_map,
+                    csv_record, global_step, labels, prediction):
+  """Runs evaluation on a single checkpoint."""
+  print('\n\nEvaluating checkpoint: {}\n'.format(checkpoint_path))
+  print('Evaluating clips in {}\n'.format(eval_csv_path))
+  sys.stdout.flush()
+  with tf.train.SingularMonitoredSession(checkpoint_filename_with_path=checkpoint_path) as sess:
+    # Read in the validation CSV, skipping the header.
+    eval_records = open(eval_csv_path).readlines()[1:]
+    # Shuffle the lines so that as we print incremental stats, we get good
+    # coverage across classes and get a quick initial impression of how well
+    # the model is doing across classes well before evaluation is completed.
+    random.shuffle(eval_records)
+
+    lwlrap = Lwlrap(class_map)
+    global_step_val = global_step.eval(session=sess)
+    for (i, record) in enumerate(eval_records):
+      record = record.strip()
+      print("[%d of %d]" % (i+1, len(eval_records)), record)
+      sys.stdout.flush()
+
+      actual, predicted = sess.run([labels, prediction], {csv_record: record})
+
+      # By construction, actual consists of identical rows, where each row is
+      # the same 1-hot label (because we are looking at features from the same
+      # clip). So we can just use the first row as the ground truth.
+      actual_labels = actual[0]
+
+      # We make a clip prediction by averaging the prediction scores across
+      # all examples for the clip.
+      predicted_labels = np.average(predicted, axis=0)
+
+      # Update eval metric.
+      lwlrap.accumulate(actual_labels[np.newaxis, :], predicted_labels[np.newaxis, :])
+
+      # For quick feedback, print running lwlrap periodically and generate a
+      # partial lwlrap summary from 5% of the eval data.
+      if i % 10 == 0:
+        print('\n', lwlrap, '\n', sep='')
+        sys.stdout.flush()
+      if i == int(0.05 * len(eval_records)):
+        lwlrap_summary = make_scalar_summary('Lwlrap-5%', lwlrap.overall_lwlrap())
+        summary_writer.add_summary(lwlrap_summary, global_step_val)
+        summary_writer.flush()
+
+    print('\nFINAL LWLRAP:\n\n', lwlrap, sep='')
+    sys.stdout.flush()
+
+    lwlrap_summary = make_scalar_summary('Lwlrap', lwlrap.overall_lwlrap())
+    summary_writer.add_summary(lwlrap_summary, global_step_val)
+    summary_writer.flush()
+
+    return lwlrap
+
+def evaluate(model_name=None, hparams=None, class_map_path=None,
+             eval_csv_path=None, eval_clip_dir=None, eval_dir=None, train_dir=None):
   """Runs the evaluation loop."""
   print('\nEvaluation for model:{} with hparams:{} and class map:{}'.format(model_name, hparams, class_map_path))
   print('Evaluation data: clip dir {} and labels {}'.format(eval_clip_dir, eval_csv_path))
-  print('Checkpoint: {}\n'.format(checkpoint_path))
+
+  # Read in class map CSV into a class index -> class name map.
+  class_map = {int(row[0]): row[1] for row in csv.reader(open(class_map_path))}
 
   with tf.Graph().as_default():
     label_class_index_table, num_classes = inputs.get_class_map(class_map_path)
@@ -159,50 +241,18 @@ def evaluate(model_name=None, hparams=None, eval_csv_path=None, eval_clip_dir=No
 
     # Write evaluation graph to checkpoint directory.
     tf.train.write_graph(tf.get_default_graph().as_graph_def(add_shapes=True),
-                         os.path.dirname(checkpoint_path), 'eval.pbtxt')
+                         eval_dir, 'eval.pbtxt')
 
-    with tf.train.SingularMonitoredSession(checkpoint_filename_with_path=checkpoint_path) as sess:
-      # Read in class map CSV into a class index -> class name map.
-      class_map = {int(row[0]): row[1] for row in csv.reader(open(class_map_path))}
+    summary_writer = tf.summary.FileWriter(eval_dir, tf.get_default_graph())
 
-      # Read in the validation CSV, skipping the header.
-      eval_records = open(eval_csv_path).readlines()[1:]
-      # Shuffle the lines so that as we print incremental stats, we get good
-      # coverage across classes and get a quick initial impression of how well
-      # the model is doing across classes well before evaluation is completed.
-      random.shuffle(eval_records)
+    # Loop through all checkpoints in the training directory.
+    checkpoint_state = tf.train.get_checkpoint_state(train_dir)
+    for checkpoint_path in checkpoint_state.all_model_checkpoint_paths:
+      checkpoint_num = get_checkpoint_num(checkpoint_path)
+      if eval_done(eval_dir, checkpoint_num):
+        print("Checkpoint %d already evaluated, skipping" % checkpoint_num)
+        continue
 
-      lwlrap = Lwlrap(class_map)
-
-      for (i, record) in enumerate(eval_records):
-        record = record.strip()
-        print record
-        sys.stdout.flush()
-
-        try:
-          actual, predicted = sess.run([labels, prediction], {csv_record: record})
-        except:
-          print lwlrap
-          raise
-
-        # By construction, actual consists of identical rows, where each row is
-        # the same 1-hot label (because we are looking at features from the same
-        # clip). So we can just use the first row as the ground truth.
-        actual_labels = actual[0]
-
-        # We make a clip prediction by averaging the prediction scores across
-        # all examples for the clip.
-        predicted_labels = np.average(predicted, axis=0)
-
-        # Update eval metric, and periodically print.
-        lwlrap.accumulate(actual_labels[np.newaxis, :], predicted_labels[np.newaxis, :])
-        if i % 50 == 0:
-          print
-          print lwlrap
-          print
-          sys.stdout.flush()
-
-      # Print final eval metric values.
-      print
-      print lwlrap
-      print
+      lwlrap = eval_checkpoint(checkpoint_path, eval_dir, summary_writer, eval_csv_path,
+                               class_map, csv_record, global_step, labels, prediction)
+      write_eval_marker(eval_dir, checkpoint_num, lwlrap)
